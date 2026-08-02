@@ -2,18 +2,21 @@
 
 English | [日本語](./README_JP.md)
 
-A Nix flake packaging MuleSoft tooling for NixOS. Currently one package:
-**Anypoint Studio**, MuleSoft's Eclipse-based IDE for Mule applications.
+A Nix flake packaging MuleSoft tooling for NixOS.
 
-Upstream ships a ~2.2 GB Linux tarball with a bundled Temurin JDK and a bundled
-Equo Chromium (CEF). There is nothing to compile; the work is in making that tree
-run against nixpkgs' libraries, and in getting an application that refuses to run
-from a read-only directory to run out of `/nix/store`.
+| Package | What it is |
+|---|---|
+| `anypoint-studio` | MuleSoft's Eclipse-based IDE for Mule applications |
+| `advanced-rest-client` | ARC, MuleSoft's desktop HTTP client |
+
+Neither is built from source — upstream ships prebuilt trees, and the work in both
+cases is making them run against nixpkgs' libraries and out of `/nix/store`.
 
 ## Usage
 
 Anypoint Studio is proprietary, so the consuming configuration needs
-`nixpkgs.config.allowUnfree = true`.
+`nixpkgs.config.allowUnfree = true`. Advanced REST Client is Apache-2.0 and needs
+nothing special.
 
 ### Flake input
 
@@ -27,15 +30,16 @@ Anypoint Studio is proprietary, so the consuming configuration needs
 }
 ```
 
-Then either take the package directly:
+Then either take the packages directly:
 
 ```nix
-environment.systemPackages = [
-  inputs.mulesoft.packages.${pkgs.system}.anypoint-studio
+environment.systemPackages = with inputs.mulesoft.packages.${pkgs.system}; [
+  anypoint-studio
+  advanced-rest-client
 ];
 ```
 
-or apply the overlay and use `pkgs.anypoint-studio`:
+or apply the overlay and use `pkgs.anypoint-studio` / `pkgs.advanced-rest-client`:
 
 ```nix
 nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
@@ -44,8 +48,16 @@ nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
 ### Without installing
 
 ```console
-$ nix run github:solitarywalker/mulesoft.nix
+$ nix run github:solitarywalker/mulesoft.nix                       # Anypoint Studio
+$ nix run github:solitarywalker/mulesoft.nix#advanced-rest-client
 ```
+
+# Anypoint Studio
+
+Upstream ships a ~2.2 GB Linux tarball with a bundled Temurin JDK and a bundled
+Equo Chromium (CEF). There is nothing to compile; the work is in making that tree
+run against nixpkgs' libraries, and in getting an application that refuses to run
+from a read-only directory to run out of `/nix/store`.
 
 ## Where things live at runtime
 
@@ -156,8 +168,114 @@ anonymously readable, so there is no mirror.
 - x86-64 Linux only. Upstream also publishes an aarch64 macOS build; nothing here
   is written for it.
 
+# Advanced REST Client
+
+Repackaged from the official Linux `.deb` of **17.0.9** (March 2022), which is the
+last release there will be: the project is retired and its repository archived.
+
+Everything lands under `~/.config/advanced-rest-client` — `settings.json`,
+`state.json`, `themes-esm/`, `workspace/`, `logs/` and Chromium's own profile
+data. Nothing is written back into the store, so there is no launcher shim here of
+the kind Anypoint Studio needs.
+
+## What the package does
+
+### The bundled Electron stays
+
+The sources are on GitHub and the app is plain JavaScript, so the obvious moves
+are to build it with `buildNpmPackage`, or at least to run upstream's `app.asar`
+under a current `pkgs.electron`. Neither works.
+
+The renderer is bundled by `npm run bundle:ui` out of ~90 `@advanced-rest-client/*`
+packages that no longer resolve as they did in 2022. And the main process is
+loaded through [`esm`](https://github.com/standard-things/esm), a CommonJS/ESM
+shim abandoned in 2020 that monkey-patches V8 internals. Under a modern Electron
+it dies during load, before any of ARC's own code runs:
+
+```
+App threw an error during load
+TypeError: Function.prototype.apply was called on undefined
+    at .../app.asar/node_modules/esm/esm.js:1:224377
+    at Object.<anonymous> (.../app.asar/src/io/main.js:12:1)
+```
+
+So ARC only starts under the Electron 17 it ships with, and this is the usual
+prebuilt-Chromium job instead: patch the interpreter and the RUNPATHs, then wrap.
+
+### The `.deb`, not the `.tar.gz`
+
+Both are published for the same release. electron-builder puts the hicolor icon
+set and a desktop entry only in the distro packages, and its `tar.gz` is 40 MB
+larger for the same tree.
+
+### `chrome-sandbox` is removed
+
+`chrome-sandbox` is the setuid sandbox helper, and nothing in the store can be
+setuid, so this copy can never do the job it exists for.
+
+Dropping it changes nothing observable — ARC starts and runs identically with a
+non-setuid copy put back next to the binary. The helper is never reached, because
+Electron 17 launches renderers with `--no-sandbox` by default, which `pgrep -af`
+confirms with the file present as well as absent. It goes anyway rather than ship
+a privileged-path binary that cannot work.
+
+### ANGLE's `libGL` has to be on the right RUNPATH
+
+`autoPatchelfHook` resolves `DT_NEEDED`; Chromium's `dlopen()` set is invisible to
+it. The first attempt used `runtimeDependencies`, which only extends the RUNPATH
+of a file that has an unresolved `DT_NEEDED` to satisfy — so it reached the main
+binary and stopped. But a `dlopen()` resolves against the RUNPATH of the *calling*
+object, and the caller is `libEGL.so`, whose RUNPATH was still empty:
+
+```
+ANGLE Display::initialize error 12289: Could not dlopen libGL.so.1
+Exiting GPU process due to errors during initialization
+```
+
+That is not a crash — Chromium falls back to software rendering, so the symptom is
+just a sluggish UI. `appendRunpaths` fixes it by appending to every ELF: libglvnd
+and pciutils for ANGLE, libnotify for the Notification API, libsecret for
+`safeStorage`, libudev for hotplug, libpulseaudio for audio.
+
+### `--skip-app-update` is baked into the wrapper
+
+`ApplicationUpdater.start()` arms `setTimeout(() => this.check(), 5000)` with
+electron-updater's `autoDownload` at its default, so five seconds after every
+launch ARC tries to fetch and install a release over its own install directory.
+That cannot work in the store — and because the `.deb` ships no
+`resources/app-update.yml`, it does not even fail quietly: it raises an updater
+error in the UI. The flag takes the branch that disables `autoDownload` and
+`autoInstallOnAppQuit` and returns before the timer is set. (There is nothing to
+find in any case; 17.0.9 is final.)
+
+## Known limitations
+
+- **Frozen on Chromium 98, with unsandboxed renderers.** Electron 17 went
+  end-of-life in 2022 and upstream is gone, so its accumulated CVEs are
+  permanent. And `WindowsManager.createBaseWindowOptions()` leaves
+  `webPreferences.sandbox` unset — Electron only began defaulting that to `true`
+  in 20 — so every ARC renderer runs with `--no-sandbox`. That is upstream's
+  choice, not this packaging's, and it cannot be changed from the outside without
+  changing how the app runs. This is a tool that talks HTTP to whatever you point
+  it at; treat it accordingly.
+- **No Wayland-native mode.** `--ozone-platform-hint=auto`, which is how the other
+  Electron packages here reach Wayland, arrived in Chromium 102. On 98 it is an
+  unknown switch, so ARC runs on XWayland.
+- **One line of noise per launch:**
+  ```
+  xdg-mime: application argument missing
+  ```
+  `start.js` calls `app.setAsDefaultProtocolClient('arc-file')`, and the
+  registration does succeed — `~/.config/mimeapps.list` gets
+  `x-scheme-handler/arc-file=advanced-rest-client.desktop`. What fails is
+  `xdg-settings`' read-back check afterwards, which under Plasma queries a source
+  that does not reflect the write it just made; believing it failed, it tries to
+  restore the previous handler, and there was none.
+- x86-64 Linux only.
+
 ## Licence
 
-The flake is MIT (see [LICENSE](./LICENSE)). Anypoint Studio itself is proprietary
-MuleSoft software, redistributed by nobody here — the derivation downloads it from
-MuleSoft at build time, and is marked `unfree` accordingly.
+The flake is MIT (see [LICENSE](./LICENSE)). Neither application is redistributed
+here — both derivations download from upstream at build time. Anypoint Studio is
+proprietary MuleSoft software and is marked `unfree` accordingly; Advanced REST
+Client is Apache-2.0.
