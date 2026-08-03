@@ -157,14 +157,34 @@ paints, and KWin — seeing a window that has stopped answering its ping — has
 dies during startup with no `hs_err` and nothing in the workspace log; the core
 dump has every thread parked in a syscall and `si_pid` pointing at the helper.
 
-`launcher.sh` therefore disables that provider, which leaves
+`launcher.sh` disables that provider. The bundle ships a second one —
 `LinuxKeystoreIntegrationJNA` from `org.eclipse.equinox.security.linux` (priority
-5, hint `AutomaticPasswordGeneration`). It takes the password from the session's
-Secret Service over libsecret instead of asking, so there is no dialog to wedge —
-and libsecret is on `LD_LIBRARY_PATH` already, which is where its JNA binding
-looks. The preference belongs in `launcher.sh` rather than in the user's
-Preferences because it lives in `$base/configuration`, which is discarded on every
-upgrade.
+5, hint `AutomaticPasswordGeneration`), which would read the password from the
+session's Secret Service over libsecret and never ask — but it does not appear in
+the selector's candidate list on this build, and with nothing left the storage
+fails outright rather than hanging:
+
+```
+StorageException: No secure storage modules found.
+  at PasswordProviderSelector.findStorageModule(PasswordProviderSelector.java:220)
+```
+
+So the master password is supplied instead, through `-eclipse.password`, which
+`SecurePreferencesMapper` accepts and uses directly without consulting any
+provider. `launcher.sh` generates it once from `/dev/urandom` into
+`$XDG_DATA_HOME/anypoint-studio/master-password`, mode 600 — beside `$base`, not
+inside it, because `$base` is discarded on every upgrade and losing the password
+would make the existing `secure_storage` undecryptable. Disabling the provider is
+kept as a second line of defence so no dialog can reappear if the password is ever
+not picked up.
+
+Both live in `launcher.sh` rather than in the user's Preferences: the preference
+file is in `$base/configuration` and would not survive an upgrade.
+
+Anyone who can read the home directory can read both the password and the storage
+it protects, which is no worse than Equinox's own default provider but is not a
+keyring. Point `-eclipse.password` elsewhere, or drop it and re-enable the prompt,
+if that trade is wrong for you.
 
 ### The bundled JDK is kept
 

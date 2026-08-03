@@ -51,11 +51,19 @@ if [ "$(cat "$base/.nix-store-path" 2>/dev/null || true)" != "$store" ]; then
   # dies during startup with no hs_err and no Java-level error; the core dump has
   # every thread parked in a syscall and si_pid pointing at the helper.
   #
-  # Disabling that provider leaves LinuxKeystoreIntegrationJNA from
-  # org.eclipse.equinox.security.linux (priority 5, hint
-  # AutomaticPasswordGeneration), which takes the password from the session's
-  # Secret Service over libsecret instead of asking — no dialog, nothing to wedge.
-  # libsecret is on LD_LIBRARY_PATH already, which is where its JNA binding looks.
+  # So that provider is disabled here. The bundle ships a second one —
+  # LinuxKeystoreIntegrationJNA from org.eclipse.equinox.security.linux, which
+  # would take the password from the session's Secret Service over libsecret and
+  # never ask — but it does not turn up in the selector's candidate list on this
+  # build, and with nothing left storage fails outright:
+  #
+  #     StorageException: No secure storage modules found.
+  #       at PasswordProviderSelector.findStorageModule(PasswordProviderSelector.java:220)
+  #
+  # which costs the Anypoint Platform session instead of hanging. The password
+  # below is what actually keeps storage working; disabling the provider is kept
+  # as the belt to that braces, so a dialog cannot reappear if the password is
+  # ever not picked up.
   #
   # The key name and its ConfigurationScope location are what
   # org.eclipse.equinox.internal.security.storage.PasswordProviderSelector reads.
@@ -71,9 +79,29 @@ PREFS
   printf '%s\n' "$store" >"$base/.nix-store-path"
 fi
 
+# With no password provider left, something has to supply the secure storage's
+# master password, and org.eclipse.equinox.internal.security.storage
+# .SecurePreferencesMapper takes one from -eclipse.password. A password given that
+# way is used directly and the providers are never consulted, so there is nothing
+# left to open a dialog.
+#
+# The file sits beside $base rather than inside it: $base is thrown away whenever
+# the store path moves, and losing the password would make the existing
+# ~/.eclipse/org.eclipse.equinox.security/secure_storage undecryptable on the next
+# upgrade. It is generated once, from urandom, and readable only by its owner —
+# which is the same protection the storage file itself gets, and no worse than
+# Equinox's own default provider. Anyone who can read the home directory can read
+# both; use a real keyring instead if that is not acceptable.
+pwfile=${XDG_DATA_HOME:-$HOME/.local/share}/anypoint-studio/master-password
+if [ ! -f "$pwfile" ]; then
+  mkdir -p "$(dirname "$pwfile")"
+  (umask 077; head -c 32 /dev/urandom | base64 >"$pwfile")
+fi
+
 # These come first so a caller can still add their own -data and the rest;
 # Equinox takes the first occurrence of a location argument.
 exec "$store/AnypointStudio" \
   -install "file:$base/install" \
   -configuration "$base/configuration" \
+  -eclipse.password "$pwfile" \
   "$@"

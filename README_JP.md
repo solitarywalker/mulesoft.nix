@@ -156,13 +156,31 @@ SecurePreferences.put <- LoginManager.saveActiveAuthUser
 起動途中で死にますが `hs_err` もワークスペースログの記録も残らず、コアダンプは全
 スレッドが syscall で待機、`si_pid` が helper を指す、という状態になります。
 
-そこで `launcher.sh` でこのプロバイダを無効化し、`org.eclipse.equinox.security.linux`
-の `LinuxKeystoreIntegrationJNA`（優先度 5、hint は `AutomaticPasswordGeneration`）を
-使わせています。こちらは尋ねる代わりにセッションの Secret Service から libsecret 経由で
-パスワードを取るので、固まる対象のダイアログが存在しません。libsecret は既に
-`LD_LIBRARY_PATH` にあり、JNA バインディングはそこを見ます。この設定をユーザーの
-Preferences ではなく `launcher.sh` に置くのは、設定ファイルが `$base/configuration` に
-あり、アップグレードのたびに捨てられるからです。
+そこで `launcher.sh` でこのプロバイダを無効化しています。バンドルにはもう 1 つ
+`org.eclipse.equinox.security.linux` の `LinuxKeystoreIntegrationJNA`（優先度 5、hint は
+`AutomaticPasswordGeneration`）があり、尋ねる代わりにセッションの Secret Service から
+libsecret 経由でパスワードを取ってくれるはずなのですが、このビルドではセレクタの候補に
+現れません。結果、候補が空になってストレージ自体が失敗します（ハングはしません）:
+
+```
+StorageException: No secure storage modules found.
+  at PasswordProviderSelector.findStorageModule(PasswordProviderSelector.java:220)
+```
+
+そのためマスターパスワードは `-eclipse.password` で渡しています。`SecurePreferencesMapper`
+はこれを受け取るとプロバイダを一切参照せずそのまま使うので、開くダイアログが存在しません。
+`launcher.sh` が `/dev/urandom` から一度だけ生成し、`$XDG_DATA_HOME/anypoint-studio/master-password`
+にモード 600 で置きます。`$base` の中ではなく隣に置くのは、`$base` がアップグレードのたびに
+捨てられるためで、パスワードを失うと既存の `secure_storage` が復号できなくなるからです。
+プロバイダの無効化は、パスワードが何らかの理由で拾われなかったときにダイアログが復活しない
+ようにするための二重の備えとして残しています。
+
+どちらもユーザーの Preferences ではなく `launcher.sh` に置いているのは、設定ファイルが
+`$base/configuration` にあってアップグレードを越えられないからです。
+
+ホームディレクトリを読める者はパスワードも保護対象のストレージも読めます。これは Equinox の
+既定プロバイダと同程度で、キーリングの代わりにはなりません。この取引が受け入れられない場合は
+`-eclipse.password` の指す先を変えるか、外してプロンプトを戻してください。
 
 ### 同梱 JDK はそのまま使う
 
