@@ -255,10 +255,22 @@ stdenv.mkDerivation (finalAttrs: {
       exec = "advanced-rest-client %U";
       icon = "advanced-rest-client";
       terminal = false;
-      categories = [
-        "Development"
-        "WebDevelopment"
-      ];
+      # Development alone, deliberately. Adding the WebDevelopment additional
+      # category — which is what ARC is, and which the spec allows — hides the
+      # entry on Plasma rather than describing it better:
+      # plasma-applications.menu gives WebDevelopment its own submenu and then
+      # excludes it from the parent,
+      #
+      #     <Menu><Name>Web Development</Name>
+      #       <Include><And><Category>Development</Category>
+      #                     <Category>WebDevelopment</Category></And></Include>
+      #     <Include><And><Category>Development</Category>
+      #                   <Not><Category>WebDevelopment</Category></Not></And></Include>
+      #
+      # so the app leaves Development (where anypoint-studio sits) and lands one
+      # level down in Development → Web Development. nixpkgs' own HTTP clients
+      # (bruno, postman) use bare Development for the same reason.
+      categories = [ "Development" ];
       keywords = [
         "ARC"
         "HTTP"
