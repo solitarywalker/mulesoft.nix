@@ -118,6 +118,23 @@ Caused by: java.nio.file.AccessDeniedException: …/conf/wrapper.conf
 store から実体コピーし（約 470 MB、ビルドごとに 1 回）、コピー元を 644 にしています。
 兄弟の `org.mule.tooling.server.*.jar` は普通の jar なのでシンボリックリンクのままです。
 
+### その起動スクリプトは `ps` を FHS から探す
+
+そのランタイムは Tanuki の wrapper スクリプト経由で起動しますが、スクリプトは冒頭で
+`ps` と `tr` を `/usr/ucb`、`/usr/bin`、`/bin` という固定リストから探します。数行上の
+`id` の探索と違ってリストに空要素がないため `$PATH` は見られず、しかもこれらの
+ディレクトリは NixOS には存在しません。デプロイは Java に到達する前に終わります:
+
+```
+Unable to locate ps.
+Please report this message along with the location of the command on your system.
+```
+
+`postPatch` で 2 つのリストの先頭に `procps` と `coreutils` の store パスを差し込み、
+ツール側が子プロセスに渡す `PATH` に依存しないようにしています。スクリプト後方の
+`case "$PS_BIN" in '/usr/bin/ps')` の分岐は `$DIST_OS = solaris` でのみ通るので、
+Linux では常にデフォルト分岐となり、見慣れないパスでも問題ありません。
+
 ### 同梱 JDK はそのまま使う
 
 上流の `AnypointStudio.ini` は `-vm` を

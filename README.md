@@ -118,6 +118,25 @@ therefore copied out of the store (~470 MB, once per build) so the source is 644
 and the copy inherits it. Its `org.mule.tooling.server.*.jar` siblings are
 ordinary jars and stay symlinks.
 
+### …and its start script looks for `ps` in the FHS
+
+That same runtime is started through a Tanuki wrapper script, and the script
+opens by locating `ps` and `tr` in a fixed list — `/usr/ucb`, `/usr/bin`, `/bin`.
+Unlike its lookup for `id` a few lines above, the list carries no empty entry, so
+`$PATH` is never consulted, and none of those directories exist here. Every
+deployment ends before it reaches Java:
+
+```
+Unable to locate ps.
+Please report this message along with the location of the command on your system.
+```
+
+`postPatch` prepends the `procps` and `coreutils` store paths to the two lists,
+which keeps the lookup independent of whatever `PATH` the tooling hands the
+subprocess. The `case "$PS_BIN" in '/usr/bin/ps')` branches further down in the
+script are guarded by `$DIST_OS = solaris`; on Linux every `ps` invocation takes
+the default branch, so an unrecognised path is fine there.
+
 ### The bundled JDK is kept
 
 Upstream's `AnypointStudio.ini` points `-vm` at

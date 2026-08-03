@@ -17,8 +17,10 @@
   unzip,
 
   # launcher.sh builds the per-user install directory with these, so they cannot
-  # be left to whatever PATH the desktop session happens to hand us.
+  # be left to whatever PATH the desktop session happens to hand us. coreutils
+  # is also patched into the design-time runtime's start script; see postPatch.
   coreutils,
+  procps,
 
   alsa-lib,
   at-spi2-atk,
@@ -183,6 +185,25 @@ stdenv.mkDerivation (finalAttrs: {
            -o -name 'wrapper-windows-*' \) -delete
       find "$tanuki/exec" -maxdepth 1 -type f ! -name 'wrapper-linux-x86-64' -delete
     done
+
+    # Deploying an application makes the tooling run the bundled runtime through
+    # its Tanuki start script, and that script opens by locating `ps` and `tr` in
+    # a fixed list of FHS directories. Unlike its lookup for `id` just above, the
+    # list carries no empty entry, so $PATH is never consulted — and none of the
+    # listed directories exist here. The deployment dies before it reaches Java:
+    #
+    #     Unable to locate ps.
+    #     Please report this message along with the location of the command on your system.
+    #
+    # Prepending the store paths keeps the lookup independent of whatever PATH
+    # the tooling hands the subprocess. The `case "$PS_BIN" in '/usr/bin/ps')`
+    # branches further down are guarded by `$DIST_OS = solaris`; on Linux every
+    # ps invocation takes the default branch, so an unrecognised path is fine.
+    substituteInPlace plugins/org.mule.tooling.server.*/mule/bin/mule \
+      --replace-fail 'resolveLocation PS_BIN ps "/usr/ucb;/usr/bin;/bin" 1' \
+                     'resolveLocation PS_BIN ps "${procps}/bin;/usr/ucb;/usr/bin;/bin" 1' \
+      --replace-fail 'resolveLocation TR_BIN tr "/usr/bin;/bin" 1' \
+                     'resolveLocation TR_BIN tr "${coreutils}/bin;/usr/bin;/bin" 1'
   '';
 
   # Upstream's AnypointStudio.ini keeps the launcher pointed at the JDK it ships
