@@ -284,6 +284,11 @@ stdenv.mkDerivation (finalAttrs: {
   # the usual cause of a workbench that will not start after an upgrade. Throwing
   # the whole directory away is cheap here — it holds no user data, the workspace
   # lives in ~/AnypointStudio/studio-workspace.
+  #
+  # That rebuild is also why launcher.sh, and not the user's Preferences, is where
+  # the Equinox secure-storage password provider gets selected: the preference file
+  # sits in $base/configuration and would be discarded on every upgrade. The
+  # reasoning for the setting itself is at the point of use in launcher.sh.
   postFixup = ''
     mkdir -p $out/libexec
     substituteAll ${./launcher.sh} $out/libexec/anypoint-studio

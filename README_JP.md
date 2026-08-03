@@ -135,6 +135,35 @@ Please report this message along with the location of the command on your system
 `case "$PS_BIN" in '/usr/bin/ps')` の分岐は `$DIST_OS = solaris` でのみ通るので、
 Linux では常にデフォルト分岐となり、見慣れないパスでも問題ありません。
 
+### セキュアストレージのパスワードプロバイダを固定する
+
+Equinox は利用可能なセキュアストレージのパスワードプロバイダのうち優先度が最も高い
+ものを選びます。それが `org.eclipse.equinox.security.ui.defaultpasswordprovider` —
+マスターパスワードをモーダルダイアログで尋ねる方です。ところが Studio は Anypoint
+Platform のセッションを、ログインダイアログ自身のイベントループに入れ子になった CEF
+コールバックの中から読みます:
+
+```
+SecurePreferences.put <- LoginManager.saveActiveAuthUser
+                      <- WebLogin$5.changing
+                      <- Chromium.lambda$17 <- Display.runAsyncMessages
+                      <- Window.runEventLoop
+```
+
+そこから 2 つ目のモーダルを開くと SWT の UI スレッドが自分を待って固まります。
+ダイアログは描画されず、ping に応答しなくなったウィンドウを見つけた KWin が
+`KillPingTimeout` 経過後に `kwin_killer_helper` から SIGABRT を撃ちます。Studio は
+起動途中で死にますが `hs_err` もワークスペースログの記録も残らず、コアダンプは全
+スレッドが syscall で待機、`si_pid` が helper を指す、という状態になります。
+
+そこで `launcher.sh` でこのプロバイダを無効化し、`org.eclipse.equinox.security.linux`
+の `LinuxKeystoreIntegrationJNA`（優先度 5、hint は `AutomaticPasswordGeneration`）を
+使わせています。こちらは尋ねる代わりにセッションの Secret Service から libsecret 経由で
+パスワードを取るので、固まる対象のダイアログが存在しません。libsecret は既に
+`LD_LIBRARY_PATH` にあり、JNA バインディングはそこを見ます。この設定をユーザーの
+Preferences ではなく `launcher.sh` に置くのは、設定ファイルが `$base/configuration` に
+あり、アップグレードのたびに捨てられるからです。
+
 ### 同梱 JDK はそのまま使う
 
 上流の `AnypointStudio.ini` は `-vm` を

@@ -137,6 +137,35 @@ subprocess. The `case "$PS_BIN" in '/usr/bin/ps')` branches further down in the
 script are guarded by `$DIST_OS = solaris`; on Linux every `ps` invocation takes
 the default branch, so an unrecognised path is fine there.
 
+### The secure-storage password provider is pinned
+
+Equinox picks the highest-priority secure-storage password provider available,
+which is `org.eclipse.equinox.security.ui.defaultpasswordprovider` — the one that
+asks for a master password in a modal dialog. Studio reads the Anypoint Platform
+session from inside a CEF callback nested in the login dialog's own event loop:
+
+```
+SecurePreferences.put <- LoginManager.saveActiveAuthUser
+                      <- WebLogin$5.changing
+                      <- Chromium.lambda$17 <- Display.runAsyncMessages
+                      <- Window.runEventLoop
+```
+
+Opening a second modal from there wedges the SWT UI thread. The dialog never
+paints, and KWin — seeing a window that has stopped answering its ping — has
+`kwin_killer_helper` SIGABRT the process once `KillPingTimeout` elapses. Studio
+dies during startup with no `hs_err` and nothing in the workspace log; the core
+dump has every thread parked in a syscall and `si_pid` pointing at the helper.
+
+`launcher.sh` therefore disables that provider, which leaves
+`LinuxKeystoreIntegrationJNA` from `org.eclipse.equinox.security.linux` (priority
+5, hint `AutomaticPasswordGeneration`). It takes the password from the session's
+Secret Service over libsecret instead of asking, so there is no dialog to wedge —
+and libsecret is on `LD_LIBRARY_PATH` already, which is where its JNA binding
+looks. The preference belongs in `launcher.sh` rather than in the user's
+Preferences because it lives in `$base/configuration`, which is discarded on every
+upgrade.
+
 ### The bundled JDK is kept
 
 Upstream's `AnypointStudio.ini` points `-vm` at
