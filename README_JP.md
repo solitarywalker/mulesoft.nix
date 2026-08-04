@@ -7,9 +7,10 @@ MuleSoft のツールを NixOS 向けにパッケージする Nix flake です�
 | パッケージ | 内容 |
 |---|---|
 | `anypoint-studio` | MuleSoft の Eclipse ベース IDE |
+| `mule-runtime` | Mule Runtime CE。作った Mule アプリを動かすスタンドアロンサーバ |
 | `advanced-rest-client` | ARC。MuleSoft のデスクトップ HTTP クライアント |
 
-どちらもソースからのビルドではありません。上流はビルド済みのツリーを配布しており、
+いずれもソースからのビルドではありません。上流はビルド済みのツリーを配布しており、
 作業の中身はいずれも、それを nixpkgs のライブラリで、かつ `/nix/store` から
 動かすことです。
 
@@ -17,7 +18,7 @@ MuleSoft のツールを NixOS 向けにパッケージする Nix flake です�
 
 Anypoint Studio はプロプライエタリなので、利用側で
 `nixpkgs.config.allowUnfree = true;` が必要です。Advanced REST Client は
-Apache-2.0 なので特別な設定は要りません。
+Apache-2.0、Mule Runtime CE は CPAL-1.0 なので、どちらも特別な設定は要りません。
 
 ### flake input として
 
@@ -36,11 +37,13 @@ Apache-2.0 なので特別な設定は要りません。
 ```nix
 environment.systemPackages = with inputs.mulesoft.packages.${pkgs.system}; [
   anypoint-studio
+  mule-runtime
   advanced-rest-client
 ];
 ```
 
-overlay 経由で `pkgs.anypoint-studio` / `pkgs.advanced-rest-client` として使う場合:
+overlay 経由で `pkgs.anypoint-studio` / `pkgs.mule-runtime` /
+`pkgs.advanced-rest-client` として使う場合:
 
 ```nix
 nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
@@ -50,6 +53,7 @@ nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
 
 ```console
 $ nix run github:solitarywalker/mulesoft.nix                       # Anypoint Studio
+$ nix run github:solitarywalker/mulesoft.nix#mule-runtime -- console
 $ nix run github:solitarywalker/mulesoft.nix#advanced-rest-client
 ```
 
@@ -229,6 +233,130 @@ https://www.mulesoft.com/downloads/studio/latest/AnypointStudio-<version>-linux6
   から渡してください。例: `anypoint-studio -vmargs -Xmx4g`
 - x86-64 Linux のみです。上流は aarch64 macOS 版も出していますが、ここでは扱っていません。
 
+# Mule Runtime
+
+Community Edition の `mule-standalone` tarball から再パッケージしています。
+ネイティブと呼べるものはほぼなく（中身は jar 群と Tanuki Java Service Wrapper です）、
+作業は FHS を前提している 2 箇所と、自分のインストールディレクトリ中に書き込むサーバを
+`/nix/store` から動かすことに集中しています。
+
+```console
+$ mule console          # フォアグラウンド実行。停止は Ctrl-C
+$ mule start | status | stop | restart | dump
+```
+
+## 実行時にできるディレクトリ
+
+| パス | 内容 |
+|---|---|
+| `$XDG_DATA_HOME/mule-runtime/<version>` | サーバが実際に動く `MULE_HOME`。store へのシンボリックリンク群と、書き込み先の実体ディレクトリ |
+| `…/<version>/apps`、`…/domains` | デプロイ先。アーティファクトが展開される場所 |
+| `…/<version>/conf` | 上流の設定。編集できるよう一度だけコピーされます |
+| `…/<version>/logs` | `mule.log` とアプリごとのログ |
+| `…/<version>/lib/user` | 自前の jar を置く、配布物が用意しているディレクトリ |
+
+ここにはユーザのデータが入るので、Anypoint Studio のインストール領域とは違って
+作り直しではなくその場で更新します。store パスが変われば、シンボリックリンクだけを
+張り直し、それ以外はそのまま残します。バージョンごとに分かれているので、
+バージョンを上げると上流の既定値から始まる新しいディレクトリになります。
+
+## パッケージがしていること
+
+### インストールディレクトリが書き込み可能でなければならない
+
+Mule は `MULE_HOME` の中のあちこちに書き込み、そのどれも外側からは止められません。
+`bin/launcher` は起動のたびに `conf/wrapper-additional.conf` を作り直し、
+`wrapper.conf` は wrapper のログを `logs/` に置き、アプリケーションは `apps/` に
+展開され、`MuleFoldersUtil#getExecutionFolder` は `.mule/` を使い、
+`bin/mule` は pid ファイルを直下に置きます。
+
+上流自身の答えは `MULE_BASE` で、これは実際かなりのところまで機能します。
+`MuleFoldersUtil` は `conf`、`logs`、`apps`、`domains`、`services`、`.mule` を
+`MULE_BASE` 側で解決するので、`MULE_HOME` が読み取り専用でもほとんど動きます。
+止まるのは `RepositoryServiceFactory#createRepositoryFolder` で、これは
+`getMuleLibFolder()` — つまり `MULE_BASE` ではなく `MULE_HOME` — を通り、
+`mkdir` に失敗するとコンテナごと落とします:
+
+```
+java.lang.RuntimeException: Could not create dependencies folder with path …/lib/mule/repository
+Caused by: java.nio.file.AccessDeniedException: …/lib/mule/repository
+```
+
+`-Dmule.repository.folder` でこのディレクトリだけは移せますが、それでも
+配布物の README 自身が「自前の jar を置け」と言っている `lib/user` と、
+`lib/mule-artifact-patches` は store に残ります。
+
+そこで `MULE_HOME` の側を、Anypoint Studio が Equinox の install area に使っているのと
+同じ形の、store へのシンボリックリンクのファーム（ユーザごと）に向けます。実体の
+ディレクトリは `conf`、`logs`、`apps`、`domains`、`lib/mule`、`lib/user` だけで、
+あとはシンボリックリンクです。`lib/mule` の中も 88 個の jar すべてがリンクです。
+コピーするのは `conf` だけ、しかも既にあるファイルは上書きしないので、
+リビルドしても設定の調整は残ります。`MULE_BASE` には触れません
+（`bin/mule` が `MULE_HOME` を既定値にし、それが既に書き込み可能なので十分です）。
+
+`MULE_HOME` は推測させず明示的に export する必要があります。`bin/mule` は未設定なら
+自分のパスから導出しますが、その過程でシンボリックリンクを解決するので、
+`bin/` をたどって store に戻ってしまいます。
+
+### その起動スクリプトは `ps` を FHS から探す
+
+`bin/mule` は冒頭で `ps` を探しますが、見に行くのは `/usr/ucb`、`/usr/bin`、`/bin` の
+3 つだけで、`$PATH` は一切参照しません。ここにはそのどれも存在しないので、
+Java に到達する前に必ず落ちます:
+
+```
+Unable to locate 'ps'.
+Please report this message along with the location of the command on your system.
+```
+
+`postPatch` で最初の候補を `procps` の store パスに向けます。こうすると残りの候補には
+到達せず、呼び出し側の `PATH` が何であっても影響を受けません。どの `ps` かを気にする
+コードは `getpid()`/`testpid()` の `$DIST_OS = solaris` 分岐だけで、Linux では
+どちらも既定の分岐を通ります。
+
+このスクリプトは他もほぼすべて外部コマンドに投げており、ログインシェルではなく
+ラッパーから呼ばれるので、coreutils・gawk・gettext・gnugrep・gnused・procps を
+明示的に `PATH` に載せています。`gettext` は `status` サブコマンドだけが使います
+（メッセージの整形に通しています）。
+
+### JDK は固定する
+
+`jdk21` を、ラッパーで `JAVA_HOME` として設定しています。Mule 4.12 のマニフェストは
+`Supported-Jdks: [17,26)`、`Recommended-Jdks: [17,18),[21,26)` を宣言しており、
+21 はどちらにも入っています。設定しないと `bin/mule` 自身の `which java` に落ちますが、
+シェルの設定を変えたせいでサーバの JVM が変わるのは望ましくありません。変えたい場合は
+`mule-runtime.override { jdk21 = pkgs.jdk17; }` です。
+
+### 他プラットフォーム向け Tanuki ネイティブは削除する
+
+wrapper は Tanuki が対応するプラットフォームごとにネイティブを 1 つずつ同梱し、
+`uname` で選びます。Linux x86-64 では残りは不要です。これは整理のためだけではなく、
+`autoPatchelfHook` が ELF のマシンタイプだけを見て対象を決めるため、Solaris x86 と
+FreeBSD x86 のバイナリ（同じアーキテクチャ、違う OSABI）に踏み込み、patchelf が
+拒否した時点で落ちるからです。
+
+### ダウンロード
+
+```
+https://repository.mulesoft.org/nexus/content/repositories/releases/org/mule/distributions/mule-standalone/<version>/mule-standalone-<version>.tar.gz
+```
+
+ただの Maven アーティファクトで、Studio のダウンロードと違って CDN も
+User-Agent の小細工もありません。Enterprise Edition
+（`mule-ee-distribution-standalone`）は認証付きリポジトリにあり実行にライセンスが
+必要です。ここで扱っているのは CE です。
+
+## 既知の制限
+
+- **Community Edition です。** EE 専用コネクタ、クラスタリング、Runtime Manager
+  エージェントはありません。EE 機能を使う Anypoint Studio のプロジェクトは
+  ここではデプロイできません。
+- **バージョンを上げると `MULE_HOME` が新しくなります。** `conf` が常にランタイムと
+  一致するようバージョンごとに分けているので、デプロイ済みアプリケーション・ドメイン・
+  設定の変更はアップグレードをまたぎません。`apps/` は手でコピーするか、
+  `-Dmule.deployment…` で別の場所を指してください。
+- x86-64 Linux のみです。
+
 # Advanced REST Client
 
 公式の Linux 向け `.deb`（**17.0.9**、2022 年 3 月）から再パッケージしています。
@@ -333,7 +461,7 @@ Exiting GPU process due to errors during initialization
 
 ## ライセンス
 
-この flake は MIT です（[LICENSE](./LICENSE) 参照）。どちらのアプリケーションもここでは
+この flake は MIT です（[LICENSE](./LICENSE) 参照）。どのアプリケーションもここでは
 再配布しておらず、ビルド時に上流から取得します。Anypoint Studio は MuleSoft の
-プロプライエタリソフトウェアなので `unfree` を設定しています。Advanced REST Client は
-Apache-2.0 です。
+プロプライエタリソフトウェアなので `unfree` を設定しています。Mule Runtime CE は
+CPAL-1.0、Advanced REST Client は Apache-2.0 です。

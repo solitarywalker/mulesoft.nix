@@ -16,6 +16,7 @@
       overlays.default = final: prev: {
         advanced-rest-client = final.callPackage ./advanced-rest-client.nix { };
         anypoint-studio = final.callPackage ./anypoint-studio.nix { };
+        mule-runtime = final.callPackage ./mule-runtime.nix { };
       };
     }
     // flake-utils.lib.eachDefaultSystem (
@@ -25,18 +26,19 @@
         # default config) would refuse to evaluate it. The overlay above leaves
         # that judgement to the consumer's nixpkgs; this instance exists only to
         # make `nix build`/`nix run` on this flake work, so it opts in here.
-        # (Advanced REST Client is Apache-2.0 and needs none of this; it just
-        # shares the instance.)
+        # (Advanced REST Client is Apache-2.0 and Mule Runtime CE is CPAL-1.0;
+        # neither needs any of this, they just share the instance.)
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
         };
         advanced-rest-client = pkgs.callPackage ./advanced-rest-client.nix { };
         anypoint-studio = pkgs.callPackage ./anypoint-studio.nix { };
+        mule-runtime = pkgs.callPackage ./mule-runtime.nix { };
       in
       {
         packages = {
-          inherit advanced-rest-client anypoint-studio;
+          inherit advanced-rest-client anypoint-studio mule-runtime;
           default = anypoint-studio;
         };
 

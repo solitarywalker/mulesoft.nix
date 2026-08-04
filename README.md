@@ -7,16 +7,17 @@ A Nix flake packaging MuleSoft tooling for NixOS.
 | Package | What it is |
 |---|---|
 | `anypoint-studio` | MuleSoft's Eclipse-based IDE for Mule applications |
+| `mule-runtime` | Mule Runtime CE, the standalone server that runs those applications |
 | `advanced-rest-client` | ARC, MuleSoft's desktop HTTP client |
 
-Neither is built from source — upstream ships prebuilt trees, and the work in both
-cases is making them run against nixpkgs' libraries and out of `/nix/store`.
+None is built from source — upstream ships prebuilt trees, and the work in every
+case is making them run against nixpkgs' libraries and out of `/nix/store`.
 
 ## Usage
 
 Anypoint Studio is proprietary, so the consuming configuration needs
-`nixpkgs.config.allowUnfree = true`. Advanced REST Client is Apache-2.0 and needs
-nothing special.
+`nixpkgs.config.allowUnfree = true`. Advanced REST Client is Apache-2.0 and Mule
+Runtime CE is CPAL-1.0; neither needs anything special.
 
 ### Flake input
 
@@ -35,11 +36,13 @@ Then either take the packages directly:
 ```nix
 environment.systemPackages = with inputs.mulesoft.packages.${pkgs.system}; [
   anypoint-studio
+  mule-runtime
   advanced-rest-client
 ];
 ```
 
-or apply the overlay and use `pkgs.anypoint-studio` / `pkgs.advanced-rest-client`:
+or apply the overlay and use `pkgs.anypoint-studio`, `pkgs.mule-runtime` and
+`pkgs.advanced-rest-client`:
 
 ```nix
 nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
@@ -49,6 +52,7 @@ nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
 
 ```console
 $ nix run github:solitarywalker/mulesoft.nix                       # Anypoint Studio
+$ nix run github:solitarywalker/mulesoft.nix#mule-runtime -- console
 $ nix run github:solitarywalker/mulesoft.nix#advanced-rest-client
 ```
 
@@ -236,6 +240,128 @@ anonymously readable, so there is no mirror.
 - x86-64 Linux only. Upstream also publishes an aarch64 macOS build; nothing here
   is written for it.
 
+# Mule Runtime
+
+Repackaged from the Community Edition `mule-standalone` tarball. There is nothing
+native to speak of — the distribution is jars plus a Tanuki Java Service Wrapper —
+so the work is in the two places it assumes an FHS system, and in getting a server
+that writes throughout its own installation directory to run out of `/nix/store`.
+
+```console
+$ mule console          # foreground, Ctrl-C to stop
+$ mule start | status | stop | restart | dump
+```
+
+## Where things live at runtime
+
+| Path | Contents |
+|---|---|
+| `$XDG_DATA_HOME/mule-runtime/<version>` | the `MULE_HOME` the server actually runs from — symlinks into the store, plus the directories it writes to |
+| `…/<version>/apps`, `…/domains` | deployment targets, and where artifacts are exploded |
+| `…/<version>/conf` | upstream's configuration, copied once so it can be edited |
+| `…/<version>/logs` | `mule.log` and the per-application logs |
+| `…/<version>/lib/user` | the distribution's own drop-in directory for your jars |
+
+That directory holds real user data, so — unlike Anypoint Studio's install area —
+it is refreshed in place rather than rebuilt: on a new store path the symlinks are
+recreated and everything else is left alone. It is version-scoped, so a version
+bump starts from upstream's defaults in a fresh directory.
+
+## What the package does
+
+### The installation directory has to be writable
+
+Mule writes throughout `MULE_HOME`, and none of it can be turned off from the
+outside: `bin/launcher` regenerates `conf/wrapper-additional.conf` on every start,
+`wrapper.conf` puts the wrapper log in `logs/`, applications are exploded into
+`apps/`, `MuleFoldersUtil#getExecutionFolder` uses `.mule/`, and `bin/mule` puts
+the pid file in the root.
+
+Upstream's own answer to this is `MULE_BASE`, and it very nearly works —
+`MuleFoldersUtil` resolves `conf`, `logs`, `apps`, `domains`, `services` and
+`.mule` against it, so a read-only `MULE_HOME` gets most of the way. What stops it
+is `RepositoryServiceFactory#createRepositoryFolder`, which resolves through
+`getMuleLibFolder()` — `MULE_HOME`, not `MULE_BASE` — and takes the whole container
+down with it when the `mkdir` fails:
+
+```
+java.lang.RuntimeException: Could not create dependencies folder with path …/lib/mule/repository
+Caused by: java.nio.file.AccessDeniedException: …/lib/mule/repository
+```
+
+`-Dmule.repository.folder` moves that one directory, but then `lib/user` — which
+the distribution's own README invites you to drop jars into — and
+`lib/mule-artifact-patches` are still in the store.
+
+So `MULE_HOME` points at a per-user farm of symlinks instead, the same shape
+Anypoint Studio uses for Equinox's install area. Only `conf`, `logs`, `apps`,
+`domains`, `lib/mule` and `lib/user` are real directories; everything else is a
+symlink, and inside `lib/mule` all 88 jars are symlinks too. Nothing is copied but
+`conf`, and existing files there are never overwritten, so tuning survives a
+rebuild. `MULE_BASE` is then left alone — `bin/mule` defaults it to `MULE_HOME`,
+which is already writable.
+
+`MULE_HOME` has to be exported rather than inferred. `bin/mule` derives it from its
+own path when unset, and resolves symlinks while doing so, which follows `bin/`
+straight back into the store.
+
+### …and the start script looks for `ps` in the FHS
+
+`bin/mule` opens by locating `ps`, and looks in exactly three directories —
+`/usr/ucb`, `/usr/bin`, `/bin` — never consulting `$PATH`. None of them exist here,
+so every invocation dies before it reaches Java:
+
+```
+Unable to locate 'ps'.
+Please report this message along with the location of the command on your system.
+```
+
+`postPatch` points the first candidate at the `procps` store path, which leaves the
+fallbacks unreachable and keeps the lookup independent of whatever `PATH` a caller
+has. The only code that cares which `ps` this is sits behind `$DIST_OS = solaris`
+branches in `getpid()`/`testpid()`; on Linux both take the default branch.
+
+The rest of the script shells out for nearly everything else too, and it is invoked
+from a wrapper rather than a login shell, so coreutils, gawk, gettext, gnugrep,
+gnused and procps go on its `PATH` explicitly. `gettext` is reached only by the
+`status` command, which formats its message through it.
+
+### The JDK is pinned
+
+`jdk21`, set as `JAVA_HOME` on the wrapper. Mule 4.12's manifest declares
+`Supported-Jdks: [17,26)` and `Recommended-Jdks: [17,18),[21,26)`, so 21 sits
+inside both. Leaving it unset would fall through to `bin/mule`'s own `which java`,
+and a server should not change JVM because a shell profile did. Override with
+`mule-runtime.override { jdk21 = pkgs.jdk17; }`.
+
+### Foreign Tanuki natives are dropped
+
+The wrapper ships one native per platform Tanuki supports and picks between them
+from `uname`, so on Linux x86-64 the rest is dead weight. Dropping them is not just
+tidiness: `autoPatchelfHook` decides what to patch from the ELF machine type alone,
+so it walks straight into the Solaris x86 and FreeBSD x86 binaries — same
+architecture, different OSABI — and dies when patchelf refuses them.
+
+### The download
+
+```
+https://repository.mulesoft.org/nexus/content/repositories/releases/org/mule/distributions/mule-standalone/<version>/mule-standalone-<version>.tar.gz
+```
+
+A plain Maven artifact — no CDN and no User-Agent games, unlike the Studio
+download. The Enterprise Edition (`mule-ee-distribution-standalone`) lives in a
+credentialed repository and needs a licence to run; this is the CE one.
+
+## Known limitations
+
+- **Community Edition.** No EE-only connectors, no clustering, no runtime manager
+  agent, and Anypoint Studio projects that use EE features will not deploy here.
+- **A version bump starts a fresh `MULE_HOME`.** The per-user directory is
+  version-scoped so that `conf` always matches the runtime, which means deployed
+  applications, domains and configuration edits do not carry across an upgrade.
+  Copy `apps/` over by hand, or point `-Dmule.deployment…` elsewhere.
+- x86-64 Linux only.
+
 # Advanced REST Client
 
 Repackaged from the official Linux `.deb` of **17.0.9** (March 2022), which is the
@@ -343,7 +469,7 @@ find in any case; 17.0.9 is final.)
 
 ## Licence
 
-The flake is MIT (see [LICENSE](./LICENSE)). Neither application is redistributed
-here — both derivations download from upstream at build time. Anypoint Studio is
-proprietary MuleSoft software and is marked `unfree` accordingly; Advanced REST
-Client is Apache-2.0.
+The flake is MIT (see [LICENSE](./LICENSE)). No application is redistributed
+here — every derivation downloads from upstream at build time. Anypoint Studio is
+proprietary MuleSoft software and is marked `unfree` accordingly; Mule Runtime CE
+is CPAL-1.0 and Advanced REST Client is Apache-2.0.
