@@ -20,11 +20,33 @@ if [ "$(cat "$base/.nix-store-path" 2>/dev/null || true)" != "$store" ]; then
     case "$plugin" in
       # The tooling copies this bundle's mule/ tree into its own data area to run
       # the design-time runtime, and copies it with attributes preserved — so a
-      # 444 source produces a 444 copy that it then fails to write to. It is the
-      # one bundle that has to arrive as real, writable files. Its siblings
+      # 444 source produces a 444 copy that it then fails to write to, so it has
+      # to arrive as real, writable files. Its siblings
       # org.mule.tooling.server.*.jar are ordinary jars and stay symlinks, hence
-      # the -d test.
+      # the -d test, which the munit bundle below repeats for the same reason.
       */org.mule.tooling.server.*)
+        if [ -d "$plugin" ]; then
+          cp -r --no-preserve=mode "$plugin" "$base/install/plugins/"
+          continue
+        fi
+        ;;
+
+      # RemoteRunnerClasspathBuilder.uncompress unzips this bundle's
+      # lib/munit-starter-dependencies.zip into a freshly created
+      # <bundle>/<random>/dependencies and returns that path;
+      # MunitVmRunnerConfigurationBuilder hands it to the MUnit test JVM as its
+      # module path. On a read-only bundle the mkdirs fails, and the IOException
+      # is swallowed by a catch that returns "" — so buildModulePath yields
+      # [""], JDT's StandardVMRunner still emits -p because the array is
+      # non-empty rather than empty, and the JVM refuses to start with
+      #
+      #     Error: -p requires module path specification
+      #
+      # before Mule is reached and with nothing written to the workspace log.
+      # getRemoteRunnerDepsPath does the same with
+      # lib/munit-remote-dependencies.zip for the -module_path program argument.
+      # So this bundle also has to be real, writable files.
+      */org.mule.tooling.ui.contribution.munit_*)
         if [ -d "$plugin" ]; then
           cp -r --no-preserve=mode "$plugin" "$base/install/plugins/"
           continue
