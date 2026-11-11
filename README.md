@@ -475,6 +475,18 @@ find in any case; 17.0.9 is final.)
   restore the previous handler, and there was none.
 - x86-64 Linux only.
 
+## On AI generation
+
+The Nix expressions (`flake.nix`, `anypoint-studio.nix`, `mule-runtime.nix`,
+`advanced-rest-client.nix`), the launcher scripts (`launcher.sh`,
+`mule-runtime-launcher.sh`) and both READMEs were written with the help of
+[Claude Code](https://claude.com/claude-code) and then reviewed and corrected by
+hand. The relevant commits carry a `Co-Authored-By: Claude …
+<noreply@anthropic.com>` trailer.
+
+The upstream distributions that get downloaded are not modified beyond what the
+derivations do at build time, as described above.
+
 ## Licence
 
 The flake is MIT (see [LICENSE](./LICENSE)). No application is redistributed

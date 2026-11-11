@@ -466,6 +466,18 @@ Exiting GPU process due to errors during initialization
   この呼び出しになります。
 - x86-64 Linux のみです。
 
+## 生成について
+
+Nix 式（`flake.nix`、`anypoint-studio.nix`、`mule-runtime.nix`、
+`advanced-rest-client.nix`）、起動スクリプト（`launcher.sh`、
+`mule-runtime-launcher.sh`）、英日の README は、
+[Claude Code](https://claude.com/claude-code) による自動生成を利用して書き、
+人手でレビュー・修正したものです。該当するコミットには
+`Co-Authored-By: Claude … <noreply@anthropic.com>` が付いています。
+
+ダウンロードする上流の配布物には、上で説明したビルド時の処理のほかは手を入れて
+いません。
+
 ## ライセンス
 
 この flake は MIT です（[LICENSE](./LICENSE) 参照）。どのアプリケーションもここでは
