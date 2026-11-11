@@ -7,6 +7,7 @@ A Nix flake packaging MuleSoft tooling for NixOS.
 | Package | What it is |
 |---|---|
 | `anypoint-studio` | MuleSoft's Eclipse-based IDE for Mule applications |
+| `anypoint-code-builder` | MuleSoft's VS Code-based IDE, the successor to Studio (unofficial on Linux) |
 | `mule-runtime` | Mule Runtime CE, the standalone server that runs those applications |
 | `advanced-rest-client` | ARC, MuleSoft's desktop HTTP client |
 
@@ -15,7 +16,7 @@ case is making them run against nixpkgs' libraries and out of `/nix/store`.
 
 ## Usage
 
-Anypoint Studio is proprietary, so the consuming configuration needs
+Anypoint Studio and Anypoint Code Builder are proprietary, so the consuming configuration needs
 `nixpkgs.config.allowUnfree = true`. Advanced REST Client is Apache-2.0 and Mule
 Runtime CE is CPAL-1.0; neither needs anything special.
 
@@ -52,6 +53,7 @@ nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
 
 ```console
 $ nix run github:solitarywalker/mulesoft.nix                       # Anypoint Studio
+$ nix run github:solitarywalker/mulesoft.nix#anypoint-code-builder
 $ nix run github:solitarywalker/mulesoft.nix#mule-runtime -- console
 $ nix run github:solitarywalker/mulesoft.nix#advanced-rest-client
 ```
@@ -247,6 +249,94 @@ anonymously readable, so there is no mirror.
   `anypoint-studio -vmargs -Xmx4g`.
 - x86-64 Linux only. Upstream also publishes an aarch64 macOS build; nothing here
   is written for it.
+
+# Anypoint Code Builder
+
+Anypoint Code Builder is VS Code plus eight MuleSoft extensions from the
+Marketplace. The package is nixpkgs' `vscode-with-extensions` with those eight.
+The extensions are also exposed one by one as
+`anypoint-code-builder.extensions.<name>`, for adding them to a VS Code you
+already configure elsewhere.
+
+**This is unofficial.** Upstream publishes the extensions for win32-x64,
+darwin-x64 and darwin-arm64 only, and does not support Linux.
+
+## What the package does
+
+### darwin-x64 builds, with three native pieces swapped out
+
+Six of the eight extensions are byte-for-byte the same on every platform; only
+`extension.vsixmanifest`, which names the platform, differs. The other two each
+bundle a native runtime, and those are all that is replaced:
+
+| Extension | Bundled | Replaced with |
+|---|---|---|
+| `mule-dx-dependencies` | Temurin JDK 17.0.20.1 | `temurin-bin-17`, by rewriting `contributes."acb.java.home"` in its `package.json` |
+| `mule-dx-api-component` | Node.js 22.23.4 | `nodejs_22` |
+| `mule-dx-api-component` | `acv`, a Go binary | built from source (below) |
+
+Everything else that is native already ships a linux-x86-64 copy beside the
+others: the Tanuki wrapper of the bundled Mule runtime, and tree-sitter's Node
+addon. Both go through `autoPatchelfHook`.
+
+VS Code is told the extensions have no target platform (`targetPlatform:
+"undefined"` in the generated `extensions.json`), so it does not reject the
+darwin builds.
+
+### `acv` is built from source
+
+`acv` is AML's [amf-custom-validator](https://github.com/aml-org/amf-custom-validator),
+the API governance validator (Apache-2.0). The darwin binary's Go build info gives
+it away: `path command-line-arguments` with amf-custom-validator as a `(devel)`
+dependency, which is what the repository's `go build -o acv ./cmd/main.go`
+produces. Upstream has archived the repository; the package builds its last tag,
+`v1.8.0-SNAPSHOT.126`.
+
+### The bundled Mule runtime is made writable when it is copied
+
+On activation the Integration extension copies the newest runtime under
+`mule-dx-runtime`'s `build/runtime` into `<ACB home>/runtime/<name>`, and runs Mule
+from the copy. The copy is fs-extra's `copySync`, which keeps the source's mode:
+from the store, that is a tree of read-only directories and files, and Mule cannot
+write its own `conf/wrapper.conf` or `logs/`. The copy is skipped whenever the
+target directory already exists, so a read-only copy would stay read-only for
+good.
+
+The package patches the extension's `dist/extension.js` to run `chmod -R u+w` on
+the copy right after it is made. The match is against minified code, but with
+`--replace-fail`, so an upstream change breaks the build instead of quietly
+leaving the runtime read-only.
+
+The JDK copy does not need this. It copies into a directory created beforehand,
+so the top-level directory stays writable, and the marker file the extension
+writes there succeeds.
+
+The runtime's start script gets the same `ps`/`tr` patch as Anypoint Studio's.
+
+## Where things live at runtime
+
+| Path | What |
+|---|---|
+| `~/AnypointCodeBuilder/java/<store name of the JDK>` | the copy of the JDK the extensions run on; a new copy per JDK update |
+| `~/AnypointCodeBuilder/runtime/mule-enterprise-standalone-<version>` | the copy of the bundled Mule runtime |
+| `~/AnypointCodeBuilder/logs`, `.tmp`, `.tooling-cache` | logs and caches |
+
+`~/AnypointCodeBuilder` is upstream's default, configurable with the
+`mule.homeDirectory` setting. Old JDK copies are not cleaned up.
+
+## Known limitations
+
+- **Only start-up has been verified**: all eight extensions activate, the Java
+  language server starts with all five plugins, the API language server starts
+  on the replaced Node and `acv`, and the copied Mule runtime boots on the copied
+  JDK. Creating, running or deploying a Mule application from the UI, MUnit, and
+  signing in to Anypoint Platform have not been tried.
+- **The MCP server's `npm install -g anypoint-cli-v4-public` fails**, because the
+  `npm` it finds on `PATH` lives in `/nix/store`. The rest works without it.
+- **"Run the Mule runtime in an external terminal" throws on Linux.** Upstream
+  only implements it for macOS (`osascript`) and Windows (`cmd`).
+- The bundled runtime is **Mule Enterprise Edition**, under MuleSoft's licence.
+- x86-64 Linux only.
 
 # Mule Runtime
 
@@ -477,8 +567,8 @@ find in any case; 17.0.9 is final.)
 
 ## On AI generation
 
-The Nix expressions (`flake.nix`, `anypoint-studio.nix`, `mule-runtime.nix`,
-`advanced-rest-client.nix`), the launcher scripts (`launcher.sh`,
+The Nix expressions (`flake.nix`, `anypoint-studio.nix`,
+`anypoint-code-builder.nix`, `mule-runtime.nix`, `advanced-rest-client.nix`), the launcher scripts (`launcher.sh`,
 `mule-runtime-launcher.sh`) and both READMEs were written with the help of
 [Claude Code](https://claude.com/claude-code) and then reviewed and corrected by
 hand. The relevant commits carry a `Co-Authored-By: Claude …
@@ -491,5 +581,6 @@ derivations do at build time, as described above.
 
 The flake is MIT (see [LICENSE](./LICENSE)). No application is redistributed
 here — every derivation downloads from upstream at build time. Anypoint Studio is
-proprietary MuleSoft software and is marked `unfree` accordingly; Mule Runtime CE
+proprietary MuleSoft software and is marked `unfree` accordingly, as are the
+Anypoint Code Builder extensions and VS Code itself; Mule Runtime CE
 is CPAL-1.0 and Advanced REST Client is Apache-2.0.

@@ -17,6 +17,7 @@
         advanced-rest-client = final.callPackage ./advanced-rest-client.nix { };
         anypoint-studio = final.callPackage ./anypoint-studio.nix { };
         mule-runtime = final.callPackage ./mule-runtime.nix { };
+        anypoint-code-builder = final.callPackage ./anypoint-code-builder.nix { };
       };
     }
     // flake-utils.lib.eachDefaultSystem (
@@ -35,10 +36,16 @@
         advanced-rest-client = pkgs.callPackage ./advanced-rest-client.nix { };
         anypoint-studio = pkgs.callPackage ./anypoint-studio.nix { };
         mule-runtime = pkgs.callPackage ./mule-runtime.nix { };
+        anypoint-code-builder = pkgs.callPackage ./anypoint-code-builder.nix { };
       in
       {
         packages = {
-          inherit advanced-rest-client anypoint-studio mule-runtime;
+          inherit
+            advanced-rest-client
+            anypoint-code-builder
+            anypoint-studio
+            mule-runtime
+            ;
           default = anypoint-studio;
         };
 

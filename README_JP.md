@@ -7,6 +7,7 @@ MuleSoft のツールを NixOS 向けにパッケージする Nix flake です�
 | パッケージ | 内容 |
 |---|---|
 | `anypoint-studio` | MuleSoft の Eclipse ベース IDE |
+| `anypoint-code-builder` | MuleSoft の VS Code ベース IDE。Studio の後継（Linux では非公式） |
 | `mule-runtime` | Mule Runtime CE。作った Mule アプリを動かすスタンドアロンサーバ |
 | `advanced-rest-client` | ARC。MuleSoft のデスクトップ HTTP クライアント |
 
@@ -16,7 +17,7 @@ MuleSoft のツールを NixOS 向けにパッケージする Nix flake です�
 
 ## 使い方
 
-Anypoint Studio はプロプライエタリなので、利用側で
+Anypoint Studio と Anypoint Code Builder はプロプライエタリなので、利用側で
 `nixpkgs.config.allowUnfree = true;` が必要です。Advanced REST Client は
 Apache-2.0、Mule Runtime CE は CPAL-1.0 なので、どちらも特別な設定は要りません。
 
@@ -53,6 +54,7 @@ nixpkgs.overlays = [ inputs.mulesoft.overlays.default ];
 
 ```console
 $ nix run github:solitarywalker/mulesoft.nix                       # Anypoint Studio
+$ nix run github:solitarywalker/mulesoft.nix#anypoint-code-builder
 $ nix run github:solitarywalker/mulesoft.nix#mule-runtime -- console
 $ nix run github:solitarywalker/mulesoft.nix#advanced-rest-client
 ```
@@ -239,6 +241,92 @@ https://www.mulesoft.com/downloads/studio/latest/AnypointStudio-<version>-linux6
 - 同じ理由で **`AnypointStudio.ini` を編集した JVM 調整**もできません。コマンドライン
   から渡してください。例: `anypoint-studio -vmargs -Xmx4g`
 - x86-64 Linux のみです。上流は aarch64 macOS 版も出していますが、ここでは扱っていません。
+
+# Anypoint Code Builder
+
+Anypoint Code Builder の実体は、VS Code と Marketplace にある MuleSoft の拡張 8 個
+です。このパッケージは、その 8 個を入れた nixpkgs の `vscode-with-extensions` です。
+拡張は `anypoint-code-builder.extensions.<名前>` として 1 個ずつも取り出せるので、
+別の場所で設定している VS Code に足すこともできます。
+
+**非公式です。** 上流が拡張を出しているのは win32-x64、darwin-x64、darwin-arm64
+だけで、Linux は対応していません。
+
+## パッケージがしていること
+
+### darwin-x64 版を使い、ネイティブな部分を 3 つ差し替える
+
+8 個のうち 6 個は、どのプラットフォームでも中身がまったく同じです。違うのは
+プラットフォーム名の入った `extension.vsixmanifest` だけです。残りの 2 個はそれぞれ
+ネイティブなランタイムを同梱していて、差し替えるのはそこだけです。
+
+| 拡張 | 同梱物 | 差し替え先 |
+|---|---|---|
+| `mule-dx-dependencies` | Temurin JDK 17.0.20.1 | `temurin-bin-17`。`package.json` の `contributes."acb.java.home"` を書き換える |
+| `mule-dx-api-component` | Node.js 22.23.4 | `nodejs_22` |
+| `mule-dx-api-component` | Go 製のバイナリ `acv` | ソースからビルド（後述） |
+
+ほかのネイティブなもの（同梱 Mule ランタイムの Tanuki wrapper、tree-sitter の
+Node アドオン）には、最初から linux-x86-64 版も入っています。どちらも
+`autoPatchelfHook` に通しています。
+
+生成される `extensions.json` では拡張のターゲットプラットフォームが
+`"undefined"` になるので、VS Code が darwin 版を弾くことはありません。
+
+### `acv` はソースからビルドする
+
+`acv` は AML の [amf-custom-validator](https://github.com/aml-org/amf-custom-validator)
+で、API ガバナンスの検証に使うもの（Apache-2.0）です。darwin 版バイナリの Go の
+ビルド情報が `path command-line-arguments` で、amf-custom-validator を `(devel)` の
+依存に持っていました。これはリポジトリの `go build -o acv ./cmd/main.go` が作る
+ものと一致します。上流はリポジトリをアーカイブ済みなので、最後のタグ
+`v1.8.0-SNAPSHOT.126` をビルドしています。
+
+### 同梱 Mule ランタイムのコピーを書き込めるようにする
+
+Integration 拡張は、有効化のときに `mule-dx-runtime` の `build/runtime` にある
+いちばん新しいランタイムを `<ACB home>/runtime/<名前>` にコピーし、そこから Mule を
+動かします。コピーは fs-extra の `copySync` で、元の権限をそのまま引き継ぎます。
+store からだと読み取り専用のディレクトリとファイルの集まりになり、Mule は自分の
+`conf/wrapper.conf` や `logs/` に書き込めません。コピー先がすでにあればコピーは
+飛ばされるので、一度読み取り専用で作られると、ずっとそのままです。
+
+そこで、拡張の `dist/extension.js` にパッチを当てて、コピーの直後に
+`chmod -R u+w` を実行させています。minify されたコードへのパッチですが、
+`--replace-fail` を使っているので、上流のコードが変わればビルドが失敗して気づけます。
+
+JDK のコピーにはこの対処は要りません。先に作ったディレクトリの中へコピーするので、
+いちばん上のディレクトリは書き込めるままで、拡張がそこに置く目印のファイルも
+書けます。
+
+ランタイムの起動スクリプトには、Anypoint Studio のものと同じ `ps`／`tr` の
+パッチを当てています。
+
+## 実行時にできるディレクトリ
+
+| パス | 内容 |
+|---|---|
+| `~/AnypointCodeBuilder/java/<JDK の store 名>` | 拡張が使う JDK のコピー。JDK が更新されるたびに新しく作られる |
+| `~/AnypointCodeBuilder/runtime/mule-enterprise-standalone-<版>` | 同梱 Mule ランタイムのコピー |
+| `~/AnypointCodeBuilder/logs`、`.tmp`、`.tooling-cache` | ログとキャッシュ |
+
+`~/AnypointCodeBuilder` は上流の既定値で、設定の `mule.homeDirectory` で変えられます。
+古い JDK のコピーは自動では消えません。
+
+## 既知の制限
+
+- **確認したのは起動まで**です。8 個の拡張がすべて有効化され、Java の言語サーバーが
+  5 つのプラグインとともに起動し、API の言語サーバーが差し替えた Node と `acv` で
+  起動し、コピーした Mule ランタイムがコピーした JDK で起動するところまでです。
+  UI からの Mule アプリの作成・実行・デプロイ、MUnit、Anypoint Platform への
+  サインインは試していません。
+- **MCP サーバーの `npm install -g anypoint-cli-v4-public` が失敗します。** `PATH`
+  上で見つかる `npm` が `/nix/store` にあるためです。これがなくてもほかの部分は
+  動きます。
+- **「Mule ランタイムを外部ターミナルで実行する」機能は Linux では例外になります。**
+  上流には macOS（`osascript`）と Windows（`cmd`）の実装しかありません。
+- 同梱のランタイムは **Mule Enterprise Edition** で、MuleSoft のライセンスに従います。
+- x86-64 Linux のみです。
 
 # Mule Runtime
 
@@ -468,8 +556,8 @@ Exiting GPU process due to errors during initialization
 
 ## 生成について
 
-Nix 式（`flake.nix`、`anypoint-studio.nix`、`mule-runtime.nix`、
-`advanced-rest-client.nix`）、起動スクリプト（`launcher.sh`、
+Nix 式（`flake.nix`、`anypoint-studio.nix`、`anypoint-code-builder.nix`、
+`mule-runtime.nix`、`advanced-rest-client.nix`）、起動スクリプト（`launcher.sh`、
 `mule-runtime-launcher.sh`）、英日の README は、
 [Claude Code](https://claude.com/claude-code) による自動生成を利用して書き、
 人手でレビュー・修正したものです。該当するコミットには
@@ -482,5 +570,6 @@ Nix 式（`flake.nix`、`anypoint-studio.nix`、`mule-runtime.nix`、
 
 この flake は MIT です（[LICENSE](./LICENSE) 参照）。どのアプリケーションもここでは
 再配布しておらず、ビルド時に上流から取得します。Anypoint Studio は MuleSoft の
-プロプライエタリソフトウェアなので `unfree` を設定しています。Mule Runtime CE は
+プロプライエタリソフトウェアなので `unfree` を設定しています。Anypoint Code Builder の
+拡張と VS Code 本体も同様です。Mule Runtime CE は
 CPAL-1.0、Advanced REST Client は Apache-2.0 です。
