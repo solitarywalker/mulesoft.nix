@@ -188,15 +188,22 @@ StorageException: No secure storage modules found.
 
 ### 同梱 JDK はそのまま使う
 
-上流の `AnypointStudio.ini` は `-vm` を
-`plugins/org.mule.tooling.jdk.linux.x86_64_*` に向けており、これは触っていません。
-Eclipse の JustJ のような単なる同梱ランタイムではないからです。
-`configuration/org.eclipse.equinox.simpleconfigurator/bundles.info` がこれを OSGi
-バンドル `org.mule.tooling.jdk.linux.x86_64` として登録していて、ツール側はそこから
-解決して設計時 Mule ランタイムを起動します（起動のたびにログへ
-`Default JRE set: org.mule.tooling.jdk.linux.x86_64` が出ます）。`pkgs.jdk17` に
-差し替えると `-vm` は直ってもそのバンドルが宙に浮くので、Temurin 17.0.12 のツリーごと
-`autoPatchelfHook` に通しています。
+上流は JDK を 2 つ同梱しています。`AnypointStudio.ini` は `-vm` を
+`plugins/org.mule.tooling.jdk.v25.linux.x86_64_*` に向けており、ツール側は設計時
+Mule ランタイムを `plugins/org.mule.tooling.jdk.v17.linux.x86_64_*` で起動します。
+どちらも触っていません。Eclipse の JustJ のような単なる同梱ランタイムではないから
+です。`configuration/org.eclipse.equinox.simpleconfigurator/bundles.info` がそれぞれを
+OSGi バンドルとして登録していて、ツール側はそこから解決します（起動のたびにログへ
+`Default JRE set: org.mule.tooling.jdk.v17.linux.x86_64` が出ます）。
+`pkgs.jdk17`／`pkgs.jdk25` に差し替えると `-vm` は直ってもバンドルが宙に浮くので、
+Temurin のツリーを 2 つともその場でパッチしています。
+
+パッチは JDK ごとに分けて当てます。`autoPatchelfHook` は `DT_NEEDED` を、渡された
+ツリー全体から soname で探します。2 つの JDK は同じ soname（`libjli.so`、
+`libjava.so`、`libjvm.so` など）を持っているので、ツリー全体に 1 回で通すと v25 の
+RUNPATH にも v17 のものが書き込まれます。そうなると、Studio を起動する JDK 25 の
+`java` が JDK 17 の `libjli.so` を読み込みます。そこで、フック自体の実行は止めて、
+`autoPatchelf` を JDK ごとに 1 回ずつ、残りの部分にもう 1 回呼んでいます。
 
 ### ネイティブライブラリ
 

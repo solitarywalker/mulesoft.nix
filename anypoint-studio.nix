@@ -116,7 +116,7 @@ in
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "anypoint-studio";
-  version = "7.27.0";
+  version = "7.29.0";
 
   src = fetchurl {
     # The only host that serves this is www.mulesoft.com; the mule-studio S3
@@ -128,7 +128,7 @@ stdenv.mkDerivation (finalAttrs: {
     # upstream's own wording, and they have removed superseded builds before.
     # Should this 404 one day, the fix is a version bump, not a URL rewrite.
     url = "https://www.mulesoft.com/downloads/studio/latest/AnypointStudio-${finalAttrs.version}-linux64.tar.gz";
-    hash = "sha256-M+Onn0aWy1Wr8DjNhyQ2ZLrNeTeUrvJhLVlMtQLc9oM=";
+    hash = "sha256-iSo5fkvfPYNdfSf4HUsmstTxdDr8TidQhMKRMfN2NKU=";
 
     # Akamai fronts the download and rejects curl's default User-Agent with 403,
     # and rejects a browser User-Agent on its own too — both headers are needed.
@@ -206,14 +206,16 @@ stdenv.mkDerivation (finalAttrs: {
                      'resolveLocation TR_BIN tr "${coreutils}/bin;/usr/bin;/bin" 1'
   '';
 
-  # Upstream's AnypointStudio.ini keeps the launcher pointed at the JDK it ships
-  # in plugins/org.mule.tooling.jdk.linux.x86_64_*, and that is left alone on
-  # purpose. It is not merely a bundled runtime the way Eclipse's JustJ is:
-  # configuration/org.eclipse.equinox.simpleconfigurator/bundles.info registers it
-  # as the OSGi bundle org.mule.tooling.jdk.linux.x86_64, and the tooling resolves
-  # it from there to start the design-time Mule runtime. Swapping in pkgs.jdk17
-  # would fix the -vm line and leave that bundle dangling, so instead the whole
-  # Temurin 17.0.12 tree goes through autoPatchelfHook with everything else.
+  # Upstream ships two JDKs, plugins/org.mule.tooling.jdk.v17.linux.x86_64_* and
+  # plugins/org.mule.tooling.jdk.v25.linux.x86_64_*. AnypointStudio.ini points
+  # the launcher at the v25 one, and the tooling runs the design-time Mule
+  # runtime on the v17 one. Both are left alone on purpose. They are not merely
+  # bundled runtimes the way Eclipse's JustJ is:
+  # configuration/org.eclipse.equinox.simpleconfigurator/bundles.info registers
+  # each as an OSGi bundle (org.mule.tooling.jdk.v17.linux.x86_64, …v25…), and
+  # the tooling resolves them from there. Swapping in pkgs.jdk17/jdk25 would fix
+  # the -vm line and leave those bundles dangling, so instead both Temurin trees
+  # are patched in place — each on its own, see postFixup.
   installPhase = ''
     runHook preInstall
 
@@ -289,7 +291,27 @@ stdenv.mkDerivation (finalAttrs: {
   # the Equinox secure-storage password provider gets selected: the preference file
   # sits in $base/configuration and would be discarded on every upgrade. The
   # reasoning for the setting itself is at the point of use in launcher.sh.
+  #
+  # autoPatchelfHook's own run is replaced by the calls at the top of postFixup.
+  # It resolves each DT_NEEDED by soname against every library under the paths it
+  # is given, and the two JDKs ship the same sonames (libjli.so, libjava.so,
+  # libjvm.so, …). Run once over $out, it settles on the v17 copies and writes
+  # them into the v25 RUNPATHs too — so the v25 java that starts Studio would
+  # load v17's libjli.so. Patching each JDK in a call of its own keeps every
+  # RUNPATH inside its own tree. Nothing outside the JDKs links against them
+  # (the launcher dlopens libjvm.so by path), so the rest is a third call that
+  # leaves the JDK directories out.
+  dontAutoPatchelf = true;
+
   postFixup = ''
+    studio=$out/share/anypoint-studio
+    for jdk in $studio/plugins/org.mule.tooling.jdk.v*.linux.x86_64_*/; do
+      autoPatchelf -- "$jdk"
+    done
+    autoPatchelf -- \
+      $(find $studio -mindepth 1 -maxdepth 1 ! -name plugins) \
+      $(find $studio/plugins -mindepth 1 -maxdepth 1 ! -name 'org.mule.tooling.jdk.v*')
+
     mkdir -p $out/libexec
     substituteAll ${./launcher.sh} $out/libexec/anypoint-studio
     chmod +x $out/libexec/anypoint-studio

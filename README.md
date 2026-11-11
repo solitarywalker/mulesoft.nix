@@ -190,17 +190,25 @@ it protects, which is no worse than Equinox's own default provider but is not a
 keyring. Point `-eclipse.password` elsewhere, or drop it and re-enable the prompt,
 if that trade is wrong for you.
 
-### The bundled JDK is kept
+### The bundled JDKs are kept
 
-Upstream's `AnypointStudio.ini` points `-vm` at
-`plugins/org.mule.tooling.jdk.linux.x86_64_*`, and that is left alone. It is not
-merely a bundled runtime the way Eclipse's JustJ is:
-`configuration/org.eclipse.equinox.simpleconfigurator/bundles.info` registers it as
-the OSGi bundle `org.mule.tooling.jdk.linux.x86_64`, and the tooling resolves it
-from there to start the design-time Mule runtime — the log says
-`Default JRE set: org.mule.tooling.jdk.linux.x86_64` on every start. Substituting
-`pkgs.jdk17` would fix the `-vm` line and leave that bundle dangling, so the whole
-Temurin 17.0.12 tree goes through `autoPatchelfHook` with everything else.
+Upstream ships two JDKs. `AnypointStudio.ini` points `-vm` at
+`plugins/org.mule.tooling.jdk.v25.linux.x86_64_*`, and the tooling starts the
+design-time Mule runtime on `plugins/org.mule.tooling.jdk.v17.linux.x86_64_*`.
+Both are left alone. They are not merely bundled runtimes the way Eclipse's JustJ
+is: `configuration/org.eclipse.equinox.simpleconfigurator/bundles.info` registers
+each as an OSGi bundle, and the tooling resolves them from there — the log says
+`Default JRE set: org.mule.tooling.jdk.v17.linux.x86_64` on every start.
+Substituting `pkgs.jdk17`/`pkgs.jdk25` would fix the `-vm` line and leave those
+bundles dangling, so both Temurin trees are patched in place.
+
+They are patched one at a time. `autoPatchelfHook` resolves each `DT_NEEDED` by
+soname across everything it is given, and the two JDKs ship the same sonames
+(`libjli.so`, `libjava.so`, `libjvm.so`, …). Run once over the whole tree, it
+writes the v17 copies into the v25 RUNPATHs as well, so the JDK 25 `java` that
+starts Studio would load JDK 17's `libjli.so`. The package therefore turns the
+hook's own run off and calls `autoPatchelf` once per JDK, then once more for
+everything else.
 
 ### Native libraries
 
